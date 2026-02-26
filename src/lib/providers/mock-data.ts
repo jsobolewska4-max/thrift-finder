@@ -1,10 +1,33 @@
-import { SearchResult } from "../types";
+import { Platform, SearchResult } from "../types";
+
+// Real search URLs for each platform
+const PLATFORM_SEARCH_URLS: Record<Platform, (query: string) => string> = {
+  poshmark: (q) =>
+    `https://poshmark.com/search?query=${encodeURIComponent(q)}&type=listings`,
+  depop: (q) => `https://www.depop.com/search/?q=${encodeURIComponent(q)}`,
+  therealreal: (q) =>
+    `https://www.therealreal.com/search?q=${encodeURIComponent(q)}`,
+  thredup: (q) =>
+    `https://www.thredup.com/search?search_text=${encodeURIComponent(q)}`,
+};
+
+// Seeded image URLs using picsum.photos — each seed produces a consistent image
+function productImage(seed: string): string {
+  return `https://picsum.photos/seed/${seed}/400/500`;
+}
 
 export function generateMockResults(query: string): SearchResult[] {
   const q = query.toLowerCase();
 
   // If the query looks like it's about the Nicole Saldaña shoes, return tailored results
-  if (q.includes("nicole") || q.includes("saldaña") || q.includes("saldana") || q.includes("fabiana") || q.includes("mary jane")) {
+  if (
+    q.includes("nicole") ||
+    q.includes("saldaña") ||
+    q.includes("saldana") ||
+    q.includes("fabiana") ||
+    q.includes("mary jane")
+  ) {
+    const searchTerm = "nicole saldana fabiana mary jane";
     return [
       {
         id: "mock-pm-1",
@@ -13,8 +36,8 @@ export function generateMockResults(query: string): SearchResult[] {
         originalPrice: 470,
         currency: "USD",
         platform: "poshmark",
-        url: "https://poshmark.com/listing/nicole-saldana-fabiana",
-        imageUrl: "https://placehold.co/400x500/2d2d2d/white?text=Nicole+Salda%C3%B1a%0AFabiana+MJ",
+        url: PLATFORM_SEARCH_URLS.poshmark(searchTerm),
+        imageUrl: productImage("ns-fabiana-1"),
         condition: "Like New",
         size: "38",
         brand: "Nicole Saldaña",
@@ -27,8 +50,8 @@ export function generateMockResults(query: string): SearchResult[] {
         originalPrice: 470,
         currency: "USD",
         platform: "therealreal",
-        url: "https://therealreal.com/products/nicole-saldana-fabiana",
-        imageUrl: "https://placehold.co/400x500/004225/white?text=Nicole+Salda%C3%B1a%0AThe+RealReal",
+        url: PLATFORM_SEARCH_URLS.therealreal(searchTerm),
+        imageUrl: productImage("ns-fabiana-2"),
         condition: "Very Good",
         size: "38.5",
         brand: "Nicole Saldaña",
@@ -40,8 +63,8 @@ export function generateMockResults(query: string): SearchResult[] {
         originalPrice: 470,
         currency: "USD",
         platform: "depop",
-        url: "https://depop.com/products/nicole-saldana-fabiana",
-        imageUrl: "https://placehold.co/400x500/ff2300/white?text=Nicole+Salda%C3%B1a%0ADepop",
+        url: PLATFORM_SEARCH_URLS.depop(searchTerm),
+        imageUrl: productImage("ns-fabiana-3"),
         condition: "Good",
         size: "39",
         brand: "Nicole Saldaña",
@@ -54,8 +77,8 @@ export function generateMockResults(query: string): SearchResult[] {
         originalPrice: 470,
         currency: "USD",
         platform: "thredup",
-        url: "https://thredup.com/product/nicole-saldana-fabiana",
-        imageUrl: "https://placehold.co/400x500/00a98f/white?text=Nicole+Salda%C3%B1a%0AThredUp",
+        url: PLATFORM_SEARCH_URLS.thredup(searchTerm),
+        imageUrl: productImage("ns-fabiana-4"),
         condition: "Good",
         size: "38",
         brand: "Nicole Saldaña",
@@ -67,8 +90,8 @@ export function generateMockResults(query: string): SearchResult[] {
         originalPrice: 470,
         currency: "USD",
         platform: "poshmark",
-        url: "https://poshmark.com/listing/nicole-saldana-fabiana-2",
-        imageUrl: "https://placehold.co/400x500/7b2a8f/white?text=Nicole+Salda%C3%B1a%0APoshmark",
+        url: PLATFORM_SEARCH_URLS.poshmark(searchTerm),
+        imageUrl: productImage("ns-fabiana-5"),
         condition: "New with Tags",
         size: "37",
         brand: "Nicole Saldaña",
@@ -81,8 +104,8 @@ export function generateMockResults(query: string): SearchResult[] {
         originalPrice: 470,
         currency: "USD",
         platform: "therealreal",
-        url: "https://therealreal.com/products/nicole-saldana-fabiana-2",
-        imageUrl: "https://placehold.co/400x500/004225/white?text=Nicole+Salda%C3%B1a%0ATRR+%232",
+        url: PLATFORM_SEARCH_URLS.therealreal(searchTerm),
+        imageUrl: productImage("ns-fabiana-6"),
         condition: "Good",
         size: "39",
         brand: "Nicole Saldaña",
@@ -99,8 +122,8 @@ export function generateMockResults(query: string): SearchResult[] {
       originalPrice: 120,
       currency: "USD",
       platform: "poshmark",
-      url: "https://poshmark.com/listing/example-1",
-      imageUrl: `https://placehold.co/400x500/7b2a8f/white?text=${encodeURIComponent(query.slice(0, 20))}%0APoshmark`,
+      url: PLATFORM_SEARCH_URLS.poshmark(query),
+      imageUrl: productImage(`pm-${q.replace(/\s+/g, "-")}`),
       condition: "Excellent",
       brand: query.split(" ")[0],
       seller: "seller123",
@@ -112,8 +135,8 @@ export function generateMockResults(query: string): SearchResult[] {
       originalPrice: 95,
       currency: "USD",
       platform: "depop",
-      url: "https://depop.com/products/example-1",
-      imageUrl: `https://placehold.co/400x500/ff2300/white?text=${encodeURIComponent(query.slice(0, 20))}%0ADepop`,
+      url: PLATFORM_SEARCH_URLS.depop(query),
+      imageUrl: productImage(`dep-${q.replace(/\s+/g, "-")}`),
       condition: "Good",
       brand: query.split(" ")[0],
       seller: "vintagefinds",
@@ -125,8 +148,8 @@ export function generateMockResults(query: string): SearchResult[] {
       originalPrice: 250,
       currency: "USD",
       platform: "therealreal",
-      url: "https://therealreal.com/products/example-1",
-      imageUrl: `https://placehold.co/400x500/004225/white?text=${encodeURIComponent(query.slice(0, 20))}%0AThe+RealReal`,
+      url: PLATFORM_SEARCH_URLS.therealreal(query),
+      imageUrl: productImage(`trr-${q.replace(/\s+/g, "-")}`),
       condition: "Very Good",
       brand: query.split(" ")[0],
     },
@@ -137,8 +160,8 @@ export function generateMockResults(query: string): SearchResult[] {
       originalPrice: 80,
       currency: "USD",
       platform: "thredup",
-      url: "https://thredup.com/product/example-1",
-      imageUrl: `https://placehold.co/400x500/00a98f/white?text=${encodeURIComponent(query.slice(0, 20))}%0AThredUp`,
+      url: PLATFORM_SEARCH_URLS.thredup(query),
+      imageUrl: productImage(`tu-${q.replace(/\s+/g, "-")}`),
       condition: "Like New",
       brand: query.split(" ")[0],
     },
