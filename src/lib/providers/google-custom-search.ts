@@ -7,20 +7,25 @@ const PLATFORM_DOMAINS: Record<Platform, string> = {
   thredup: "thredup.com",
 };
 
-interface GoogleSearchItem {
-  title: string;
-  link: string;
-  snippet: string;
-  pagemap?: {
-    metatags?: Array<Record<string, string>>;
-    cse_image?: Array<{ src: string }>;
-    offer?: Array<{ price?: string; pricecurrency?: string }>;
-    product?: Array<{
-      name?: string;
-      image?: string;
-      brand?: string;
-      price?: string;
-    }>;
+interface VertexSearchResult {
+  id: string;
+  document: {
+    derivedStructData: {
+      link: string;
+      title: string;
+      snippets?: Array<{ snippet: string; snippet_status: string }>;
+      pagemap?: {
+        metatags?: Array<Record<string, string>>;
+        cse_image?: Array<{ src: string }>;
+        offer?: Array<{ price?: string; pricecurrency?: string }>;
+        product?: Array<{
+          name?: string;
+          image?: string;
+          brand?: string;
+          price?: string;
+        }>;
+      };
+    };
   };
 }
 
@@ -31,15 +36,17 @@ function detectPlatform(url: string): Platform | null {
   return null;
 }
 
-function extractPrice(item: GoogleSearchItem): number | null {
-  // Try structured data first
-  const offer = item.pagemap?.offer?.[0];
+function extractPrice(result: VertexSearchResult): number | null {
+  const data = result.document.derivedStructData;
+
+  // Try structured pagemap data first
+  const offer = data.pagemap?.offer?.[0];
   if (offer?.price) {
     const price = parseFloat(offer.price);
     if (!isNaN(price)) return price;
   }
 
-  const product = item.pagemap?.product?.[0];
+  const product = data.pagemap?.product?.[0];
   if (product?.price) {
     const price = parseFloat(product.price.replace(/[^0-9.]/g, ""));
     if (!isNaN(price)) return price;
@@ -47,63 +54,74 @@ function extractPrice(item: GoogleSearchItem): number | null {
 
   // Try extracting from title or snippet
   const priceRegex = /\$(\d+(?:\.\d{2})?)/;
-  const titleMatch = item.title.match(priceRegex);
+  const titleMatch = data.title?.match(priceRegex);
   if (titleMatch) return parseFloat(titleMatch[1]);
 
-  const snippetMatch = item.snippet.match(priceRegex);
+  const snippetText = data.snippets?.[0]?.snippet?.replace(/<\/?b>/g, "") ?? "";
+  const snippetMatch = snippetText.match(priceRegex);
   if (snippetMatch) return parseFloat(snippetMatch[1]);
 
   return null;
 }
 
-function extractImage(item: GoogleSearchItem): string | undefined {
+function extractImage(result: VertexSearchResult): string | undefined {
+  const data = result.document.derivedStructData;
   return (
-    item.pagemap?.cse_image?.[0]?.src ||
-    item.pagemap?.product?.[0]?.image ||
+    data.pagemap?.cse_image?.[0]?.src ||
+    data.pagemap?.product?.[0]?.image ||
     undefined
   );
 }
 
-function extractBrand(item: GoogleSearchItem): string | undefined {
-  return item.pagemap?.product?.[0]?.brand || undefined;
+function extractBrand(result: VertexSearchResult): string | undefined {
+  return result.document.derivedStructData.pagemap?.product?.[0]?.brand || undefined;
 }
 
 export async function searchGoogle(
   query: string,
   apiKey: string,
-  searchEngineId: string,
+  projectId: string,
+  engineId: string,
 ): Promise<SearchResult[]> {
-  const url = new URL("https://www.googleapis.com/customsearch/v1");
-  url.searchParams.set("key", apiKey);
-  url.searchParams.set("cx", searchEngineId);
-  url.searchParams.set("q", query);
-  url.searchParams.set("num", "10");
+  const endpoint =
+    `https://discoveryengine.googleapis.com/v1/projects/${projectId}` +
+    `/locations/global/collections/default_collection/engines/${engineId}` +
+    `/servingConfigs/default_search:searchLite?key=${apiKey}`;
 
-  const response = await fetch(url.toString());
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      query,
+      pageSize: 10,
+      userPseudoId: "thrift-finder-server",
+    }),
+  });
 
   if (!response.ok) {
     const error = await response.text();
-    console.error("Google Custom Search API error:", error);
-    throw new Error(`Google Custom Search API error: ${response.status}`);
+    console.error("Vertex AI Search API error:", error);
+    throw new Error(`Vertex AI Search API error: ${response.status}`);
   }
 
   const data = await response.json();
-  const items: GoogleSearchItem[] = data.items || [];
+  const items: VertexSearchResult[] = data.results || [];
 
   const results: SearchResult[] = [];
 
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
-    const platform = detectPlatform(item.link);
+    const link = item.document.derivedStructData.link;
+    const platform = detectPlatform(link);
     if (!platform) continue;
 
     results.push({
-      id: `gcs-${platform}-${i}`,
-      title: item.title,
+      id: `vas-${platform}-${i}`,
+      title: item.document.derivedStructData.title,
       price: extractPrice(item) ?? 0,
       currency: "USD",
       platform,
-      url: item.link,
+      url: link,
       imageUrl: extractImage(item),
       brand: extractBrand(item),
     });
