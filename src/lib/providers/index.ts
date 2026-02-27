@@ -27,15 +27,14 @@ export async function search(query: SearchQuery): Promise<SearchResult[]> {
 
   // Use real Google Custom Search if credentials are configured
   if (apiKey && searchEngineId) {
-    try {
-      return await searchGoogle(searchText, apiKey, searchEngineId);
-    } catch (error) {
-      console.error("Google search failed, falling back to mock data:", error);
-      return generateMockResults(searchText);
-    }
+    return await searchGoogle(searchText, apiKey, searchEngineId);
   }
 
   // Fall back to mock data when no API credentials are set
-  console.log("No Google API credentials configured — using mock data");
+  console.warn(
+    "No Google API credentials configured — using mock data.",
+    `GOOGLE_API_KEY ${apiKey ? "is set" : "is MISSING"}.`,
+    `GOOGLE_SEARCH_ENGINE_ID ${searchEngineId ? "is set" : "is MISSING"}.`,
+  );
   return generateMockResults(searchText);
 }
