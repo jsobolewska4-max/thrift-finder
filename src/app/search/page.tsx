@@ -24,8 +24,12 @@ function SearchResults() {
   const [sort, setSort] = useState<SortOption>("relevance");
   const [filters, setFilters] = useState<FilterState>({ platforms: [] });
 
+  console.log("[SearchResults] render, query:", JSON.stringify(query), "url:", JSON.stringify(url));
+
   useEffect(() => {
+    console.log("[SearchResults] useEffect fired, query:", JSON.stringify(query), "url:", JSON.stringify(url));
     if (!query && !url) {
+      console.log("[SearchResults] no query or url, bailing out");
       setLoading(false);
       return;
     }
@@ -37,7 +41,9 @@ function SearchResults() {
     if (query) params.set("q", query);
     if (url) params.set("url", url);
 
-    fetch(`/api/search?${params.toString()}`)
+    const fetchUrl = `/api/search?${params.toString()}`;
+    console.log("[SearchResults] fetching:", fetchUrl);
+    fetch(fetchUrl)
       .then((res) => {
         if (!res.ok) throw new Error("Search failed");
         return res.json() as Promise<SearchResponse>;
