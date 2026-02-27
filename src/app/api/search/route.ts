@@ -17,7 +17,13 @@ export async function GET(request: NextRequest) {
   const query: SearchQuery = { text, url };
 
   try {
+    console.log("[search] env check:", {
+      GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ? "SET" : "MISSING",
+      VERTEX_PROJECT_ID: process.env.VERTEX_PROJECT_ID ? "SET" : "MISSING",
+      VERTEX_ENGINE_ID: process.env.VERTEX_ENGINE_ID ? "SET" : "MISSING",
+    });
     const results = await search(query);
+    console.log("[search] returned", results.length, "results, first id:", results[0]?.id);
     return NextResponse.json({
       results,
       query,
