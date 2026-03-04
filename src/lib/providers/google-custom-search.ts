@@ -229,7 +229,7 @@ const PER_PLATFORM_TARGET = Math.ceil(TARGET_RESULTS / PLATFORMS.length);
 
 /**
  * Runs a single platform-scoped query against Vertex AI Search.
- * Appends `site:<domain>` to bias results toward one platform.
+ * Uses the Vertex `filter` parameter to restrict results to one platform's domain.
  */
 async function searchPlatform(
   query: string,
@@ -244,14 +244,15 @@ async function searchPlatform(
   let totalSize = 0;
   const results: SearchResult[] = [];
   const seenUrls = new Set<string>();
-  const siteQuery = `${query} site:${PLATFORM_DOMAINS[platform]}`;
+  const domain = PLATFORM_DOMAINS[platform];
 
   for (let apiFetch = 0; apiFetch < MAX_API_PAGES; apiFetch++) {
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        query: siteQuery,
+        query,
+        filter: `link: ANY("${domain}")`,
         pageSize: API_PAGE_SIZE,
         offset: apiOffset,
         userPseudoId: `thrift-finder-${platform}`,
