@@ -1,4 +1,4 @@
-import SearchWidget from "@/components/SearchWidget";
+import SearchBar from "@/components/SearchBar";
 
 export default function Home() {
   return (
@@ -13,7 +13,7 @@ export default function Home() {
         </p>
 
         {/* Search */}
-        <SearchWidget />
+        <SearchBar />
 
         {/* Platform logos */}
         <div className="mt-10 flex items-center gap-6">
