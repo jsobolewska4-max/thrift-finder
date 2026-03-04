@@ -19,44 +19,58 @@ function SearchResults() {
 
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
 
-  const [sort, setSort] = useState<SortOption>("relevance");
+  const [sort, setSort] = useState<SortOption>("price_asc");
   const [filters, setFilters] = useState<FilterState>({ platforms: [] });
 
-  console.log("[SearchResults] render, query:", JSON.stringify(query), "url:", JSON.stringify(url));
-
-  useEffect(() => {
-    console.log("[SearchResults] useEffect fired, query:", JSON.stringify(query), "url:", JSON.stringify(url));
-    if (!query && !url) {
-      console.log("[SearchResults] no query or url, bailing out");
-      setLoading(false);
-      return;
+  const fetchResults = (pageNum: number, append: boolean) => {
+    if (append) {
+      setLoadingMore(true);
+    } else {
+      setLoading(true);
+      setError(null);
     }
-
-    setLoading(true);
-    setError(null);
 
     const params = new URLSearchParams();
     if (query) params.set("q", query);
     if (url) params.set("url", url);
+    params.set("page", String(pageNum));
 
-    const fetchUrl = `/api/search?${params.toString()}`;
-    console.log("[SearchResults] fetching:", fetchUrl);
-    fetch(fetchUrl)
+    fetch(`/api/search?${params.toString()}`)
       .then((res) => {
         if (!res.ok) throw new Error("Search failed");
         return res.json() as Promise<SearchResponse>;
       })
       .then((data) => {
-        setResults(data.results);
+        if (append) {
+          setResults((prev) => [...prev, ...data.results]);
+        } else {
+          setResults(data.results);
+        }
+        setHasMore(data.hasMore);
+        setPage(pageNum);
         setLoading(false);
+        setLoadingMore(false);
       })
       .catch((err) => {
         console.error(err);
         setError("Something went wrong. Please try again.");
         setLoading(false);
+        setLoadingMore(false);
       });
+  };
+
+  useEffect(() => {
+    if (!query && !url) {
+      setLoading(false);
+      return;
+    }
+    fetchResults(1, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, url]);
 
   // Apply filters and sorting
@@ -140,11 +154,31 @@ function SearchResults() {
             />
 
             {filteredResults.length > 0 ? (
-              <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-                {filteredResults.map((result) => (
-                  <ResultCard key={result.id} result={result} />
-                ))}
-              </div>
+              <>
+                <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+                  {filteredResults.map((result) => (
+                    <ResultCard key={result.id} result={result} />
+                  ))}
+                </div>
+                {hasMore && (
+                  <div className="mt-6 flex justify-center">
+                    <button
+                      onClick={() => fetchResults(page + 1, true)}
+                      disabled={loadingMore}
+                      className="rounded-full border border-neutral-200 bg-white px-6 py-2.5 text-sm font-medium text-neutral-700 shadow-sm transition hover:border-neutral-300 hover:bg-neutral-50 disabled:opacity-50"
+                    >
+                      {loadingMore ? (
+                        <span className="flex items-center gap-2">
+                          <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-neutral-200 border-t-neutral-600" />
+                          Loading...
+                        </span>
+                      ) : (
+                        "Load more results"
+                      )}
+                    </button>
+                  </div>
+                )}
+              </>
             ) : results.length > 0 ? (
               <div className="flex flex-col items-center py-16 text-center">
                 <p className="text-sm text-neutral-500">

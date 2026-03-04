@@ -6,6 +6,7 @@ export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
   const text = params.get("q") || undefined;
   const url = params.get("url") || undefined;
+  const page = Math.max(1, parseInt(params.get("page") || "1", 10));
 
   if (!text && !url) {
     return NextResponse.json(
@@ -17,17 +18,13 @@ export async function GET(request: NextRequest) {
   const query: SearchQuery = { text, url };
 
   try {
-    console.log("[search] env check:", {
-      GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ? "SET" : "MISSING",
-      VERTEX_PROJECT_ID: process.env.VERTEX_PROJECT_ID ? "SET" : "MISSING",
-      VERTEX_ENGINE_ID: process.env.VERTEX_ENGINE_ID ? "SET" : "MISSING",
-    });
-    const results = await search(query);
-    console.log("[search] returned", results.length, "results, first id:", results[0]?.id);
+    const result = await search(query, { page });
     return NextResponse.json({
-      results,
+      results: result.results,
       query,
-      totalResults: results.length,
+      totalResults: result.totalResults,
+      hasMore: result.hasMore,
+      page,
     });
   } catch (error) {
     console.error("Search error:", error);

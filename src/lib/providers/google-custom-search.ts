@@ -89,12 +89,50 @@ function extractBrand(result: VertexSearchResult): string | undefined {
   return result.document.derivedStructData.pagemap?.product?.[0]?.brand || undefined;
 }
 
+function isSoldOut(result: VertexSearchResult): boolean {
+  const data = result.document.derivedStructData;
+  const title = (data.title || "").toLowerCase();
+  const snippet = (data.snippets?.[0]?.snippet || "").toLowerCase().replace(/<\/?b>/g, "");
+
+  // Common sold-out indicators on resale platforms
+  const soldPatterns = [/\bsold\b/, /\bnot available\b/, /\bunavailable\b/];
+  for (const pattern of soldPatterns) {
+    if (pattern.test(title) || pattern.test(snippet)) return true;
+  }
+
+  // Check metatags for availability
+  const metatags = data.pagemap?.metatags?.[0];
+  if (metatags) {
+    const availability = (metatags["product:availability"] || metatags["og:availability"] || "").toLowerCase();
+    if (availability === "oos" || availability === "out of stock" || availability === "sold") {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export interface VertexSearchOptions {
+  page?: number;
+  pageSize?: number;
+}
+
+export interface VertexSearchResponse {
+  results: SearchResult[];
+  totalResults: number;
+  hasMore: boolean;
+}
+
 export async function searchGoogle(
   query: string,
   apiKey: string,
   projectId: string,
   engineId: string,
-): Promise<SearchResult[]> {
+  options: VertexSearchOptions = {},
+): Promise<VertexSearchResponse> {
+  const { page = 1, pageSize = 25 } = options;
+  const offset = (page - 1) * pageSize;
+
   const endpoint =
     `https://discoveryengine.googleapis.com/v1/projects/${projectId}` +
     `/locations/global/collections/default_collection/engines/${engineId}` +
@@ -105,7 +143,8 @@ export async function searchGoogle(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       query,
-      pageSize: 25,
+      pageSize,
+      offset,
       userPseudoId: "thrift-finder-server",
     }),
   });
@@ -118,6 +157,7 @@ export async function searchGoogle(
 
   const data = await response.json();
   const items: VertexSearchResult[] = data.results || [];
+  const totalSize = data.totalSize || 0;
 
   const results: SearchResult[] = [];
 
@@ -130,10 +170,18 @@ export async function searchGoogle(
     // Skip search pages and non-product URLs — only keep actual product listings
     if (!isProductListingUrl(link, platform)) continue;
 
+    // Skip sold-out listings
+    if (isSoldOut(item)) continue;
+
+    const price = extractPrice(item);
+
+    // Skip listings with no price or $0 price
+    if (!price || price <= 0) continue;
+
     results.push({
-      id: `vas-${platform}-${i}`,
+      id: `vas-${platform}-${offset + i}`,
       title: item.document.derivedStructData.title,
-      price: extractPrice(item) ?? 0,
+      price,
       currency: "USD",
       platform,
       url: link,
@@ -142,5 +190,9 @@ export async function searchGoogle(
     });
   }
 
-  return results;
+  return {
+    results,
+    totalResults: totalSize,
+    hasMore: offset + pageSize < totalSize,
+  };
 }

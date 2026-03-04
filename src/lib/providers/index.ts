@@ -3,7 +3,18 @@ import { searchGoogle } from "./google-custom-search";
 import { generateMockResults } from "./mock-data";
 import { extractProductInfo } from "../url-parser";
 
-export async function search(query: SearchQuery): Promise<SearchResult[]> {
+export interface SearchOptions {
+  page?: number;
+  pageSize?: number;
+}
+
+export interface SearchResultPage {
+  results: SearchResult[];
+  totalResults: number;
+  hasMore: boolean;
+}
+
+export async function search(query: SearchQuery, options: SearchOptions = {}): Promise<SearchResultPage> {
   let searchText = query.text || "";
 
   // If a URL was provided, try to extract product info from it
@@ -19,7 +30,7 @@ export async function search(query: SearchQuery): Promise<SearchResult[]> {
   }
 
   if (!searchText.trim()) {
-    return [];
+    return { results: [], totalResults: 0, hasMore: false };
   }
 
   const apiKey = process.env.GOOGLE_API_KEY;
@@ -28,7 +39,7 @@ export async function search(query: SearchQuery): Promise<SearchResult[]> {
 
   // Use Vertex AI Search if credentials are configured
   if (apiKey && projectId && engineId) {
-    return await searchGoogle(searchText, apiKey, projectId, engineId);
+    return await searchGoogle(searchText, apiKey, projectId, engineId, options);
   }
 
   // Fall back to mock data when no API credentials are set
@@ -38,5 +49,6 @@ export async function search(query: SearchQuery): Promise<SearchResult[]> {
     `VERTEX_PROJECT_ID ${projectId ? "is set" : "is MISSING"}.`,
     `VERTEX_ENGINE_ID ${engineId ? "is set" : "is MISSING"}.`,
   );
-  return generateMockResults(searchText);
+  const mockResults = generateMockResults(searchText);
+  return { results: mockResults, totalResults: mockResults.length, hasMore: false };
 }

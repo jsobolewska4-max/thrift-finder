@@ -24,6 +24,8 @@ export interface SearchResponse {
   results: SearchResult[];
   query: SearchQuery;
   totalResults: number;
+  hasMore: boolean;
+  page: number;
 }
 
 export type SortOption = "relevance" | "price_asc" | "price_desc";
