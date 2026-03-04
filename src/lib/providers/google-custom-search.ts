@@ -51,17 +51,24 @@ function isProductListingUrl(url: string, platform: Platform): boolean {
 function extractPrice(result: VertexSearchResult): number | null {
   const data = result.document.derivedStructData;
 
-  // Try structured pagemap data first
+  // Best source: metatags product:price:amount (used by Poshmark, Depop, etc.)
+  const metatags = data.pagemap?.metatags?.[0];
+  if (metatags?.["product:price:amount"]) {
+    const price = parseFloat(metatags["product:price:amount"]);
+    if (!isNaN(price) && price > 0) return price;
+  }
+
+  // Try structured pagemap data
   const offer = data.pagemap?.offer?.[0];
   if (offer?.price) {
     const price = parseFloat(offer.price);
-    if (!isNaN(price)) return price;
+    if (!isNaN(price) && price > 0) return price;
   }
 
   const product = data.pagemap?.product?.[0];
   if (product?.price) {
     const price = parseFloat(product.price.replace(/[^0-9.]/g, ""));
-    if (!isNaN(price)) return price;
+    if (!isNaN(price) && price > 0) return price;
   }
 
   // Try extracting from title or snippet
@@ -86,7 +93,12 @@ function extractImage(result: VertexSearchResult): string | undefined {
 }
 
 function extractBrand(result: VertexSearchResult): string | undefined {
-  return result.document.derivedStructData.pagemap?.product?.[0]?.brand || undefined;
+  const data = result.document.derivedStructData;
+  return (
+    data.pagemap?.metatags?.[0]?.["product:brand"] ||
+    data.pagemap?.product?.[0]?.brand ||
+    undefined
+  );
 }
 
 function isSoldOut(result: VertexSearchResult): boolean {
@@ -123,6 +135,12 @@ export interface VertexSearchResponse {
   hasMore: boolean;
 }
 
+// The API returns at most 20 results per request, and many get filtered (sold, non-product URLs).
+// We over-fetch by making multiple API calls to accumulate enough valid results.
+const API_PAGE_SIZE = 20; // Vertex searchLite max per request
+const TARGET_RESULTS = 25; // How many valid results we want per user-facing page
+const MAX_API_PAGES = 5; // Safety limit to avoid too many API calls
+
 export async function searchGoogle(
   query: string,
   apiKey: string,
@@ -130,69 +148,86 @@ export async function searchGoogle(
   engineId: string,
   options: VertexSearchOptions = {},
 ): Promise<VertexSearchResponse> {
-  const { page = 1, pageSize = 25 } = options;
-  const offset = (page - 1) * pageSize;
+  const { page = 1 } = options;
 
   const endpoint =
     `https://discoveryengine.googleapis.com/v1/projects/${projectId}` +
     `/locations/global/collections/default_collection/engines/${engineId}` +
     `/servingConfigs/default_search:searchLite?key=${apiKey}`;
 
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      query,
-      pageSize,
-      offset,
-      userPseudoId: "thrift-finder-server",
-    }),
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    console.error("Vertex AI Search API error:", error);
-    throw new Error(`Vertex AI Search API error: ${response.status}`);
-  }
-
-  const data = await response.json();
-  const items: VertexSearchResult[] = data.results || [];
-  const totalSize = data.totalSize || 0;
-
+  // We need to skip past results from previous pages, then collect TARGET_RESULTS more.
+  // Since we don't know the exact filter ratio, we track how many API results to skip.
+  const skipValid = (page - 1) * TARGET_RESULTS;
+  let validSeen = 0;
+  let apiOffset = 0;
+  let totalSize = 0;
   const results: SearchResult[] = [];
+  const seenUrls = new Set<string>();
 
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
-    const link = item.document.derivedStructData.link;
-    const platform = detectPlatform(link);
-    if (!platform) continue;
-
-    // Skip search pages and non-product URLs — only keep actual product listings
-    if (!isProductListingUrl(link, platform)) continue;
-
-    // Skip sold-out listings
-    if (isSoldOut(item)) continue;
-
-    const price = extractPrice(item);
-
-    // Skip listings with no price or $0 price
-    if (!price || price <= 0) continue;
-
-    results.push({
-      id: `vas-${platform}-${offset + i}`,
-      title: item.document.derivedStructData.title,
-      price,
-      currency: "USD",
-      platform,
-      url: link,
-      imageUrl: extractImage(item),
-      brand: extractBrand(item),
+  for (let apiFetch = 0; apiFetch < MAX_API_PAGES * page; apiFetch++) {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query,
+        pageSize: API_PAGE_SIZE,
+        offset: apiOffset,
+        userPseudoId: "thrift-finder-server",
+      }),
     });
+
+    if (!response.ok) {
+      const error = await response.text();
+      console.error("Vertex AI Search API error:", error);
+      throw new Error(`Vertex AI Search API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const items: VertexSearchResult[] = data.results || [];
+    totalSize = data.totalSize || totalSize;
+
+    if (items.length === 0) break; // No more results from API
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const link = item.document.derivedStructData.link;
+      const platform = detectPlatform(link);
+      if (!platform) continue;
+      if (!isProductListingUrl(link, platform)) continue;
+      if (isSoldOut(item)) continue;
+      if (seenUrls.has(link)) continue;
+      seenUrls.add(link);
+
+      const price = extractPrice(item);
+
+      validSeen++;
+
+      // Skip results belonging to previous pages
+      if (validSeen <= skipValid) continue;
+
+      results.push({
+        id: `vas-${platform}-${apiOffset + i}`,
+        title: item.document.derivedStructData.title,
+        price: price ?? 0,
+        currency: "USD",
+        platform,
+        url: link,
+        imageUrl: extractImage(item),
+        brand: extractBrand(item),
+      });
+
+      if (results.length >= TARGET_RESULTS) break;
+    }
+
+    apiOffset += items.length;
+
+    if (results.length >= TARGET_RESULTS) break;
+    if (apiOffset >= totalSize) break;
   }
 
   return {
     results,
     totalResults: totalSize,
-    hasMore: offset + pageSize < totalSize,
+    hasMore: apiOffset < totalSize && results.length >= TARGET_RESULTS,
   };
 }
