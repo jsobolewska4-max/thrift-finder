@@ -29,11 +29,23 @@ interface VertexSearchResult {
   };
 }
 
+// URL patterns that indicate an actual product listing page (not a search page)
+const PRODUCT_URL_PATTERNS: Record<Platform, RegExp> = {
+  poshmark: /poshmark\.com\/listing\//,
+  depop: /depop\.com\/products\//,
+  therealreal: /therealreal\.com\/products\//,
+  thredup: /thredup\.com\/product\//,
+};
+
 function detectPlatform(url: string): Platform | null {
   for (const [platform, domain] of Object.entries(PLATFORM_DOMAINS)) {
     if (url.includes(domain)) return platform as Platform;
   }
   return null;
+}
+
+function isProductListingUrl(url: string, platform: Platform): boolean {
+  return PRODUCT_URL_PATTERNS[platform].test(url);
 }
 
 function extractPrice(result: VertexSearchResult): number | null {
@@ -93,7 +105,7 @@ export async function searchGoogle(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       query,
-      pageSize: 10,
+      pageSize: 25,
       userPseudoId: "thrift-finder-server",
     }),
   });
@@ -114,6 +126,9 @@ export async function searchGoogle(
     const link = item.document.derivedStructData.link;
     const platform = detectPlatform(link);
     if (!platform) continue;
+
+    // Skip search pages and non-product URLs — only keep actual product listings
+    if (!isProductListingUrl(link, platform)) continue;
 
     results.push({
       id: `vas-${platform}-${i}`,
