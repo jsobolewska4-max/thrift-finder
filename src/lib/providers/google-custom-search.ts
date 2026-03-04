@@ -1,5 +1,88 @@
 import { Platform, SearchResult } from "../types";
 
+/**
+ * Live-fetches a listing URL to verify availability and get the current price.
+ * Returns null if the listing is unavailable (404, sold, etc.).
+ */
+async function verifyListing(
+  result: SearchResult,
+): Promise<SearchResult | null> {
+  try {
+    const response = await fetch(result.url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (compatible; ThriftFinder/1.0; +https://thriftfinder.app)",
+      },
+      signal: AbortSignal.timeout(6000),
+      redirect: "follow",
+    });
+
+    // 404 or other error — listing doesn't exist
+    if (!response.ok) return null;
+
+    const html = await response.text();
+
+    // Check for sold/unavailable indicators in the live page
+    const availabilityMeta = extractMetaFromHtml(html, "product:availability")
+      || extractMetaFromHtml(html, "og:availability");
+    if (availabilityMeta) {
+      const avail = availabilityMeta.toLowerCase();
+      if (avail === "oos" || avail === "out of stock" || avail === "sold") {
+        return null;
+      }
+    }
+
+    // Some platforms show "sold" prominently on the page
+    // Check title tag for sold indicators
+    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+    if (titleMatch) {
+      const pageTitle = titleMatch[1].toLowerCase();
+      if (/\bsold\b/.test(pageTitle) || /\bnot available\b/.test(pageTitle)) {
+        return null;
+      }
+    }
+
+    // Extract current price from live page meta tags
+    const priceStr =
+      extractMetaFromHtml(html, "product:price:amount") ||
+      extractMetaFromHtml(html, "og:price:amount");
+    if (priceStr) {
+      const livePrice = parseFloat(priceStr);
+      if (!isNaN(livePrice) && livePrice > 0) {
+        return { ...result, price: livePrice };
+      }
+    }
+
+    // If we couldn't extract a live price, keep the cached one
+    return result;
+  } catch {
+    // Timeout or network error — keep the result with cached data
+    // rather than removing potentially valid listings
+    return result;
+  }
+}
+
+function extractMetaFromHtml(
+  html: string,
+  property: string,
+): string | undefined {
+  const regex = new RegExp(
+    `<meta[^>]+(?:property|name)=["']${property}["'][^>]+content=["']([^"']+)["']`,
+    "i",
+  );
+  const match = html.match(regex);
+  if (match) return match[1];
+
+  const regex2 = new RegExp(
+    `<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${property}["']`,
+    "i",
+  );
+  const match2 = html.match(regex2);
+  if (match2) return match2[1];
+
+  return undefined;
+}
+
 const PLATFORM_DOMAINS: Record<Platform, string> = {
   poshmark: "poshmark.com",
   depop: "depop.com",
@@ -225,8 +308,14 @@ export async function searchGoogle(
     if (apiOffset >= totalSize) break;
   }
 
+  // Live-verify each result: check availability and get current prices
+  const verified = await Promise.all(results.map(verifyListing));
+  const validResults = verified.filter(
+    (r): r is SearchResult => r !== null,
+  );
+
   return {
-    results,
+    results: validResults,
     totalResults: totalSize,
     hasMore: apiOffset < totalSize && results.length >= TARGET_RESULTS,
   };
