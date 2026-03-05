@@ -1,5 +1,83 @@
 import { Platform, SearchResult } from "../types";
 
+/**
+ * Live-fetches a listing URL to verify availability and get the current price.
+ * Returns null if the listing is unavailable (404, sold, etc.).
+ */
+async function verifyListing(
+  result: SearchResult,
+): Promise<SearchResult | null> {
+  try {
+    const response = await fetch(result.url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (compatible; ThriftFinder/1.0; +https://thriftfinder.app)",
+      },
+      signal: AbortSignal.timeout(3000),
+      redirect: "follow",
+    });
+
+    if (!response.ok) return null;
+
+    const html = await response.text();
+
+    // Check for sold/unavailable indicators
+    const availabilityMeta = extractMetaFromHtml(html, "product:availability")
+      || extractMetaFromHtml(html, "og:availability");
+    if (availabilityMeta) {
+      const avail = availabilityMeta.toLowerCase();
+      if (avail === "oos" || avail === "out of stock" || avail === "sold") {
+        return null;
+      }
+    }
+
+    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+    if (titleMatch) {
+      const pageTitle = titleMatch[1].toLowerCase();
+      if (/\bsold\b/.test(pageTitle) || /\bnot available\b/.test(pageTitle)) {
+        return null;
+      }
+    }
+
+    // Extract current price from live page meta tags
+    const priceStr =
+      extractMetaFromHtml(html, "product:price:amount") ||
+      extractMetaFromHtml(html, "og:price:amount");
+    if (priceStr) {
+      const livePrice = parseFloat(priceStr);
+      if (!isNaN(livePrice) && livePrice > 0) {
+        return { ...result, price: livePrice };
+      }
+    }
+
+    return result;
+  } catch {
+    // Timeout or network error — keep the result with cached data
+    return result;
+  }
+}
+
+function extractMetaFromHtml(
+  html: string,
+  property: string,
+): string | undefined {
+  const regex = new RegExp(
+    `<meta[^>]+(?:property|name)=["']${property}["'][^>]+content=["']([^"']+)["']`,
+    "i",
+  );
+  const match = html.match(regex);
+  if (match) return match[1];
+
+  const regex2 = new RegExp(
+    `<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${property}["']`,
+    "i",
+  );
+  const match2 = html.match(regex2);
+  if (match2) return match2[1];
+
+  return undefined;
+}
+
 const PLATFORM_DOMAINS: Record<Platform, string> = {
   poshmark: "poshmark.com",
   depop: "depop.com",
@@ -132,8 +210,91 @@ export interface VertexSearchResponse {
 
 const API_PAGE_SIZE = 20;
 const TARGET_RESULTS = 25;
-// Hard cap on API fetches — prevents spinning when the index has few product pages
 const MAX_API_PAGES = 3;
+
+const PLATFORMS = Object.keys(PLATFORM_DOMAINS) as Platform[];
+const PER_PLATFORM_TARGET = Math.ceil(TARGET_RESULTS / PLATFORMS.length);
+
+/**
+ * Runs a single platform-scoped query against Vertex AI Search.
+ * Uses the Vertex `filter` parameter to restrict results to one platform's domain.
+ */
+async function searchPlatform(
+  query: string,
+  platform: Platform,
+  endpoint: string,
+  target: number,
+  page: number,
+): Promise<{ results: SearchResult[]; totalSize: number }> {
+  const skipValid = (page - 1) * target;
+  let validSeen = 0;
+  let apiOffset = 0;
+  let totalSize = 0;
+  const results: SearchResult[] = [];
+  const seenUrls = new Set<string>();
+  const domain = PLATFORM_DOMAINS[platform];
+
+  for (let apiFetch = 0; apiFetch < MAX_API_PAGES; apiFetch++) {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query,
+        filter: `link: ANY("${domain}")`,
+        pageSize: API_PAGE_SIZE,
+        offset: apiOffset,
+        userPseudoId: `thrift-finder-${platform}`,
+      }),
+      signal: AbortSignal.timeout(8000),
+    });
+
+    if (!response.ok) {
+      console.error(`Vertex AI Search error for ${platform}:`, await response.text());
+      break;
+    }
+
+    const data = await response.json();
+    const items: VertexSearchResult[] = data.results || [];
+    totalSize = data.totalSize || totalSize;
+
+    if (items.length === 0) break;
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const link = item.document.derivedStructData.link;
+      const detected = detectPlatform(link);
+      if (detected !== platform) continue;
+      if (!isProductListingUrl(link, platform)) continue;
+      if (isSoldOut(item)) continue;
+      if (seenUrls.has(link)) continue;
+      seenUrls.add(link);
+
+      const price = extractPrice(item);
+      validSeen++;
+
+      if (validSeen <= skipValid) continue;
+
+      results.push({
+        id: `vas-${platform}-${apiOffset + i}`,
+        title: item.document.derivedStructData.title,
+        price: price ?? 0,
+        currency: "USD",
+        platform,
+        url: link,
+        imageUrl: extractImage(item),
+        brand: extractBrand(item),
+      });
+
+      if (results.length >= target) break;
+    }
+
+    apiOffset += items.length;
+    if (results.length >= target) break;
+    if (apiOffset >= totalSize) break;
+  }
+
+  return { results, totalSize };
+}
 
 export async function searchGoogle(
   query: string,
@@ -149,76 +310,40 @@ export async function searchGoogle(
     `/locations/global/collections/default_collection/engines/${engineId}` +
     `/servingConfigs/default_search:searchLite?key=${apiKey}`;
 
-  const skipValid = (page - 1) * TARGET_RESULTS;
-  let validSeen = 0;
-  let apiOffset = 0;
-  let totalSize = 0;
-  const results: SearchResult[] = [];
+  // Query all platforms in parallel so each gets fair representation
+  const platformResults = await Promise.all(
+    PLATFORMS.map((platform) =>
+      searchPlatform(query, platform, endpoint, PER_PLATFORM_TARGET, page),
+    ),
+  );
+
+  // Interleave results: round-robin across platforms for a balanced feed
+  const merged: SearchResult[] = [];
   const seenUrls = new Set<string>();
-
-  for (let apiFetch = 0; apiFetch < MAX_API_PAGES; apiFetch++) {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        query,
-        pageSize: API_PAGE_SIZE,
-        offset: apiOffset,
-        userPseudoId: "thrift-finder-server",
-      }),
-      signal: AbortSignal.timeout(8000),
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      console.error("Vertex AI Search API error:", error);
-      throw new Error(`Vertex AI Search API error: ${response.status}`);
+  let maxLen = 0;
+  for (const pr of platformResults) {
+    maxLen = Math.max(maxLen, pr.results.length);
+  }
+  for (let i = 0; i < maxLen; i++) {
+    for (const pr of platformResults) {
+      if (i < pr.results.length && !seenUrls.has(pr.results[i].url)) {
+        seenUrls.add(pr.results[i].url);
+        merged.push(pr.results[i]);
+      }
     }
-
-    const data = await response.json();
-    const items: VertexSearchResult[] = data.results || [];
-    totalSize = data.totalSize || totalSize;
-
-    if (items.length === 0) break;
-
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
-      const link = item.document.derivedStructData.link;
-      const platform = detectPlatform(link);
-      if (!platform) continue;
-      if (!isProductListingUrl(link, platform)) continue;
-      if (isSoldOut(item)) continue;
-      if (seenUrls.has(link)) continue;
-      seenUrls.add(link);
-
-      const price = extractPrice(item);
-
-      validSeen++;
-      if (validSeen <= skipValid) continue;
-
-      results.push({
-        id: `vas-${platform}-${apiOffset + i}`,
-        title: item.document.derivedStructData.title,
-        price: price ?? 0,
-        currency: "USD",
-        platform,
-        url: link,
-        imageUrl: extractImage(item),
-        brand: extractBrand(item),
-      });
-
-      if (results.length >= TARGET_RESULTS) break;
-    }
-
-    apiOffset += items.length;
-
-    if (results.length >= TARGET_RESULTS) break;
-    if (apiOffset >= totalSize) break;
   }
 
+  const totalSize = platformResults.reduce((sum, pr) => sum + pr.totalSize, 0);
+
+  // Live-verify each result: check availability and get current prices
+  const verified = await Promise.all(merged.map(verifyListing));
+  const validResults = verified.filter(
+    (r): r is SearchResult => r !== null,
+  );
+
   return {
-    results,
+    results: validResults,
     totalResults: totalSize,
-    hasMore: apiOffset < totalSize && results.length >= TARGET_RESULTS,
+    hasMore: merged.length >= TARGET_RESULTS,
   };
 }

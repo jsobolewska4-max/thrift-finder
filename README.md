@@ -1,36 +1,97 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Thrift Finder
 
-## Getting Started
+Search across second-hand apparel platforms to find the best deals on fashion items.
 
-First, run the development server:
+## Platforms
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+- **Poshmark** — poshmark.com
+- **Depop** — depop.com
+- **The RealReal** — therealreal.com
+- **ThredUp** — thredup.com
+
+## Features
+
+- **Cross-platform search** — queries all four platforms in parallel for balanced results
+- **Live price verification** — fetches each listing page to get the current price (not stale cached data)
+- **Sold/unavailable filtering** — automatically removes listings that are sold out or unavailable
+- **Product-page-only results** — filters out category and search pages, only shows actual product listings
+- **Sort & filter** — sort by price (low/high) or relevance, filter by platform and price range
+- **URL-based search** — paste a product URL from any retailer to find it on resale platforms
+- **Pagination** — load more results with infinite scroll
+
+## Tech Stack
+
+- **Framework**: Next.js 16 (App Router, Turbopack)
+- **Styling**: Tailwind CSS v4
+- **Search API**: Google Vertex AI Search (Discovery Engine)
+- **Deployment**: Vercel
+
+## Architecture
+
+```
+src/
+├── app/
+│   ├── page.tsx                    # Home page with search bar
+│   ├── search/page.tsx             # Search results page
+│   ├── api/search/route.ts         # Search API endpoint
+│   ├── layout.tsx                  # Root layout
+│   └── globals.css                 # Tailwind theme config
+├── components/
+│   ├── SearchBar.tsx               # Search input (full + compact variants)
+│   ├── ResultCard.tsx              # Product result card
+│   ├── FilterBar.tsx               # Sort, platform filter, price range
+│   └── PlatformBadge.tsx           # Colored platform label
+└── lib/
+    ├── types.ts                    # Shared TypeScript types
+    ├── url-parser.ts               # Extracts product info from retailer URLs
+    └── providers/
+        ├── index.ts                # Search orchestrator
+        ├── google-custom-search.ts # Vertex AI Search integration
+        └── mock-data.ts            # Fallback mock data for development
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Search Flow
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+1. User enters a search query (text or product URL)
+2. If a URL is provided, `url-parser.ts` fetches the page and extracts product name/brand from meta tags
+3. The API route calls `search()` which queries Vertex AI Search
+4. Vertex is queried **4 times in parallel** — once per platform, using the `filter` parameter to scope results to each platform's domain
+5. Results are filtered to only include actual product listing URLs (e.g. `/listing/`, `/products/`, `/product/`)
+6. Results are interleaved round-robin across platforms for a balanced feed
+7. Each result is **live-verified** — the listing page is fetched to confirm availability and get the current price from meta tags
+8. Sold/unavailable listings are removed
+9. Results are returned to the client for sorting and filtering
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Setup
 
-## Learn More
+### Prerequisites
 
-To learn more about Next.js, take a look at the following resources:
+- Node.js 18+
+- A Google Cloud project with Vertex AI Search (Discovery Engine) enabled
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Environment Variables
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Create a `.env.local` file:
 
-## Deploy on Vercel
+```
+GOOGLE_API_KEY=your-api-key
+VERTEX_PROJECT_ID=your-project-id
+VERTEX_ENGINE_ID=your-engine-id
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The Vertex AI Search engine should be configured to index the four platform domains (poshmark.com, depop.com, therealreal.com, thredup.com).
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### Development
+
+```bash
+npm install
+npm run dev
+```
+
+The app will be available at `http://localhost:3000`.
+
+### Deployment
+
+The app is configured for Vercel deployment. Push to the `main` branch to trigger a deploy. Set the environment variables in the Vercel dashboard.
+
+The search API route has `maxDuration = 15` set to allow enough time for parallel platform queries and live-verification.
