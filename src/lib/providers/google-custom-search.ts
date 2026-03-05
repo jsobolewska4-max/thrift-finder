@@ -213,26 +213,55 @@ const TARGET_RESULTS = 25;
 const MAX_API_PAGES = 3;
 
 const PLATFORMS = Object.keys(PLATFORM_DOMAINS) as Platform[];
-const PER_PLATFORM_TARGET = Math.ceil(TARGET_RESULTS / PLATFORMS.length);
 
 /**
- * Runs a single platform-scoped query against Vertex AI Search.
- * Uses the Vertex `filter` parameter to restrict results to one platform's domain.
+ * Interleave results round-robin across platforms for a balanced feed.
  */
-async function searchPlatform(
+function interleaveByPlatform(results: SearchResult[]): SearchResult[] {
+  const buckets: Record<string, SearchResult[]> = {};
+  for (const platform of PLATFORMS) {
+    buckets[platform] = [];
+  }
+  for (const r of results) {
+    buckets[r.platform].push(r);
+  }
+
+  const interleaved: SearchResult[] = [];
+  let added = true;
+  let idx = 0;
+  while (added) {
+    added = false;
+    for (const platform of PLATFORMS) {
+      if (idx < buckets[platform].length) {
+        interleaved.push(buckets[platform][idx]);
+        added = true;
+      }
+    }
+    idx++;
+  }
+  return interleaved;
+}
+
+export async function searchGoogle(
   query: string,
-  platform: Platform,
-  endpoint: string,
-  target: number,
-  page: number,
-): Promise<{ results: SearchResult[]; totalSize: number }> {
-  const skipValid = (page - 1) * target;
+  apiKey: string,
+  projectId: string,
+  engineId: string,
+  options: VertexSearchOptions = {},
+): Promise<VertexSearchResponse> {
+  const { page = 1 } = options;
+
+  const endpoint =
+    `https://discoveryengine.googleapis.com/v1/projects/${projectId}` +
+    `/locations/global/collections/default_collection/engines/${engineId}` +
+    `/servingConfigs/default_search:searchLite?key=${apiKey}`;
+
+  const skipValid = (page - 1) * TARGET_RESULTS;
   let validSeen = 0;
   let apiOffset = 0;
   let totalSize = 0;
   const results: SearchResult[] = [];
   const seenUrls = new Set<string>();
-  const domain = PLATFORM_DOMAINS[platform];
 
   for (let apiFetch = 0; apiFetch < MAX_API_PAGES; apiFetch++) {
     const response = await fetch(endpoint, {
@@ -240,17 +269,17 @@ async function searchPlatform(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         query,
-        filter: `link: ANY("${domain}")`,
         pageSize: API_PAGE_SIZE,
         offset: apiOffset,
-        userPseudoId: `thrift-finder-${platform}`,
+        userPseudoId: "thrift-finder-server",
       }),
       signal: AbortSignal.timeout(8000),
     });
 
     if (!response.ok) {
-      console.error(`Vertex AI Search error for ${platform}:`, await response.text());
-      break;
+      const error = await response.text();
+      console.error("Vertex AI Search API error:", error);
+      throw new Error(`Vertex AI Search API error: ${response.status}`);
     }
 
     const data = await response.json();
@@ -262,8 +291,8 @@ async function searchPlatform(
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
       const link = item.document.derivedStructData.link;
-      const detected = detectPlatform(link);
-      if (detected !== platform) continue;
+      const platform = detectPlatform(link);
+      if (!platform) continue;
       if (!isProductListingUrl(link, platform)) continue;
       if (isSoldOut(item)) continue;
       if (seenUrls.has(link)) continue;
@@ -285,58 +314,19 @@ async function searchPlatform(
         brand: extractBrand(item),
       });
 
-      if (results.length >= target) break;
+      if (results.length >= TARGET_RESULTS) break;
     }
 
     apiOffset += items.length;
-    if (results.length >= target) break;
+    if (results.length >= TARGET_RESULTS) break;
     if (apiOffset >= totalSize) break;
   }
 
-  return { results, totalSize };
-}
-
-export async function searchGoogle(
-  query: string,
-  apiKey: string,
-  projectId: string,
-  engineId: string,
-  options: VertexSearchOptions = {},
-): Promise<VertexSearchResponse> {
-  const { page = 1 } = options;
-
-  const endpoint =
-    `https://discoveryengine.googleapis.com/v1/projects/${projectId}` +
-    `/locations/global/collections/default_collection/engines/${engineId}` +
-    `/servingConfigs/default_search:searchLite?key=${apiKey}`;
-
-  // Query all platforms in parallel so each gets fair representation
-  const platformResults = await Promise.all(
-    PLATFORMS.map((platform) =>
-      searchPlatform(query, platform, endpoint, PER_PLATFORM_TARGET, page),
-    ),
-  );
-
-  // Interleave results: round-robin across platforms for a balanced feed
-  const merged: SearchResult[] = [];
-  const seenUrls = new Set<string>();
-  let maxLen = 0;
-  for (const pr of platformResults) {
-    maxLen = Math.max(maxLen, pr.results.length);
-  }
-  for (let i = 0; i < maxLen; i++) {
-    for (const pr of platformResults) {
-      if (i < pr.results.length && !seenUrls.has(pr.results[i].url)) {
-        seenUrls.add(pr.results[i].url);
-        merged.push(pr.results[i]);
-      }
-    }
-  }
-
-  const totalSize = platformResults.reduce((sum, pr) => sum + pr.totalSize, 0);
+  // Interleave by platform for balanced representation
+  const interleaved = interleaveByPlatform(results);
 
   // Live-verify each result: check availability and get current prices
-  const verified = await Promise.all(merged.map(verifyListing));
+  const verified = await Promise.all(interleaved.map(verifyListing));
   const validResults = verified.filter(
     (r): r is SearchResult => r !== null,
   );
@@ -344,6 +334,6 @@ export async function searchGoogle(
   return {
     results: validResults,
     totalResults: totalSize,
-    hasMore: merged.length >= TARGET_RESULTS,
+    hasMore: apiOffset < totalSize && results.length >= TARGET_RESULTS,
   };
 }
