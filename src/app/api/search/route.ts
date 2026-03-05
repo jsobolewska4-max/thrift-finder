@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { search } from "@/lib/providers";
 import { SearchQuery } from "@/lib/types";
 
+export const maxDuration = 15;
+
 export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
   const text = params.get("q") || undefined;
